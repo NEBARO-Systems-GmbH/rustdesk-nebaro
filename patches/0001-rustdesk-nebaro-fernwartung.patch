@@ -1,0 +1,442 @@
+diff --git a/flutter/macos/Runner/Configs/AppInfo.xcconfig b/flutter/macos/Runner/Configs/AppInfo.xcconfig
+index 4c6b155..1e3c589 100644
+--- a/flutter/macos/Runner/Configs/AppInfo.xcconfig
++++ b/flutter/macos/Runner/Configs/AppInfo.xcconfig
+@@ -8,7 +8,8 @@
+ PRODUCT_NAME = RustDesk
+ 
+ // The application's bundle identifier
+-PRODUCT_BUNDLE_IDENTIFIER = com.carriez.flutterHbb
++// NEBARO: own bundle id, so macOS keeps screen recording and accessibility apart from RustDesk.
++PRODUCT_BUNDLE_IDENTIFIER = at.nebaro.remote
+ 
+ // The copyright displayed in application information
+ PRODUCT_COPYRIGHT = Copyright © 2026 Purslane Tech Pte. Ltd. All rights reserved.
+diff --git a/flutter/macos/Runner/Info.plist b/flutter/macos/Runner/Info.plist
+index 36ca81e..bd94d2e 100644
+--- a/flutter/macos/Runner/Info.plist
++++ b/flutter/macos/Runner/Info.plist
+@@ -13,7 +13,9 @@
+ 	<key>CFBundleInfoDictionaryVersion</key>
+ 	<string>6.0</string>
+ 	<key>CFBundleName</key>
+-	<string>$(PRODUCT_NAME)</string>
++	<string>NEBARO Fernwartung</string>
++	<key>CFBundleDisplayName</key>
++	<string>NEBARO Fernwartung</string>
+ 	<key>CFBundlePackageType</key>
+ 	<string>APPL</string>
+ 	<key>CFBundleShortVersionString</key>
+@@ -26,10 +28,10 @@
+ 			<key>CFBundleURLIconFile</key>
+ 			<string></string>
+ 			<key>CFBundleURLName</key>
+-			<string>com.carriez.rustdesk</string>
++			<string>at.nebaro.remote</string>
+ 			<key>CFBundleURLSchemes</key>
+ 			<array>
+-				<string>rustdesk</string>
++				<string>nebaro-fernwartung</string>
+ 			</array>
+ 		</dict>
+ 	</array>
+diff --git a/flutter/windows/runner/Runner.rc b/flutter/windows/runner/Runner.rc
+index 88d1854..bc8ff1c 100644
+--- a/flutter/windows/runner/Runner.rc
++++ b/flutter/windows/runner/Runner.rc
+@@ -89,13 +89,13 @@ BEGIN
+     BEGIN
+         BLOCK "040904e4"
+         BEGIN
+-            VALUE "CompanyName", "Purslane Tech Pte. Ltd." "\0"
+-            VALUE "FileDescription", "RustDesk Remote Desktop" "\0"
++            VALUE "CompanyName", "NEBARO Systems GmbH (based on RustDesk by Purslane Tech Pte. Ltd.)" "\0"
++            VALUE "FileDescription", "NEBARO Fernwartung" "\0"
+             VALUE "FileVersion", VERSION_AS_STRING "\0"
+             VALUE "InternalName", "rustdesk" "\0"
+             VALUE "LegalCopyright", "Copyright © 2026 Purslane Tech Pte. Ltd. All rights reserved." "\0"
+             VALUE "OriginalFilename", "rustdesk.exe" "\0"
+-            VALUE "ProductName", "RustDesk" "\0"
++            VALUE "ProductName", "NEBARO Fernwartung" "\0"
+             VALUE "ProductVersion", VERSION_AS_STRING "\0"
+         END
+     END
+diff --git a/libs/portable/Cargo.toml b/libs/portable/Cargo.toml
+index 2074525..cf99210 100644
+--- a/libs/portable/Cargo.toml
++++ b/libs/portable/Cargo.toml
+@@ -28,9 +28,9 @@ native-windows-gui = {version = "1.0", default-features = false, features = ["an
+ 
+ [package.metadata.winres]
+ LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. All rights reserved."
+-ProductName = "RustDesk"
++ProductName = "NEBARO Fernwartung"
+ OriginalFilename = "rustdesk.exe"
+-FileDescription = "RustDesk Remote Desktop"
++FileDescription = "NEBARO Fernwartung"
+ #ProductVersion = ""
+ 
+ [target.'cfg(target_os="windows")'.build-dependencies]
+diff --git a/src/client.rs b/src/client.rs
+index ea71ca4..f4fe081 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -1690,6 +1690,10 @@ impl Client {
+         let sign_pk = match sign_pk {
+             Some(v) => v,
+             None => {
++                // NEBARO: no trusted identity means no encryption; break off instead of plain text.
++                if crate::nebaro::REFUSE_INSECURE {
++                    bail!("{}", crate::nebaro::INSECURE_REFUSED);
++                }
+                 // No trusted peer identity (key-less deployment, or a blob that does not verify
+                 // under our root), so no fingerprint binding is possible. Fall through like TCP's
+                 // non-secure path with is_secured() false: bailing would only move the session to
+@@ -1752,12 +1756,21 @@ impl Client {
+                                     bail!("WebRTC handshake id mismatch (possible MITM)");
+                                 }
+                                 log::error!("Handshake failed: sign failure");
++                                // NEBARO: signed id does not match the peer, refuse.
++                                if crate::nebaro::REFUSE_INSECURE {
++                                    bail!("{}", crate::nebaro::INSECURE_REFUSED);
++                                }
+                                 conn.send(&Message::new()).await?;
+                             }
+                         } else {
+                             if is_webrtc {
+                                 bail!("WebRTC peer identity could not be verified (refusing unbound channel)");
+                             }
++                            // NEBARO: the server signature of the peer key does not verify; RustDesk
++                            // would continue unencrypted here. Break off instead.
++                            if crate::nebaro::REFUSE_INSECURE {
++                                bail!("{}", crate::nebaro::INSECURE_REFUSED);
++                            }
+                             // fall back to non-secure connection in case pk mismatch
+                             log::info!("pk mismatch, fall back to non-secure");
+                             let mut msg_out = Message::new();
+@@ -1769,6 +1782,10 @@ impl Client {
+                             bail!("WebRTC handshake received an unexpected message type");
+                         }
+                         log::error!("Handshake failed: invalid message type");
++                        // NEBARO: no key exchange, so no encryption: refuse.
++                        if crate::nebaro::REFUSE_INSECURE {
++                            bail!("{}", crate::nebaro::INSECURE_REFUSED);
++                        }
+                         conn.send(&Message::new()).await?;
+                     }
+                 } else {
+@@ -1776,6 +1793,10 @@ impl Client {
+                         bail!("WebRTC handshake received a malformed message");
+                     }
+                     log::error!("Handshake failed: invalid message format");
++                    // NEBARO: no key exchange, so no encryption: refuse.
++                    if crate::nebaro::REFUSE_INSECURE {
++                        bail!("{}", crate::nebaro::INSECURE_REFUSED);
++                    }
+                     conn.send(&Message::new()).await?;
+                 }
+             }
+diff --git a/src/client/io_loop.rs b/src/client/io_loop.rs
+index 1b197a8..535c232 100644
+--- a/src/client/io_loop.rs
++++ b/src/client/io_loop.rs
+@@ -237,6 +237,14 @@ impl<T: InvokeUiSession> Remote<T> {
+                 };
+                 self.handler
+                     .set_connection_type(is_secured, direct, stream_type); // flutter -> connection_ready
++                // NEBARO: an unencrypted session is never offered for confirmation, it ends here
++                // with the reason in the window (also for direct IP access).
++                if !is_secured && crate::nebaro::REFUSE_INSECURE {
++                    self.handler.msgbox("error", "Connection Error", crate::nebaro::INSECURE_REFUSED, "");
++                    self.send_close_reason(&mut peer, "").await;
++                    self.handle_disconnected(round);
++                    return;
++                }
+                 if !is_secured
+                     && !crate::common::is_direct_ip_access(&self.handler.get_id())
+                     && !client::confirm_insecure_connection(&self.handler, &mut self.receiver).await
+diff --git a/src/common.rs b/src/common.rs
+index 4bc5bc2..90c5afd 100644
+--- a/src/common.rs
++++ b/src/common.rs
+@@ -1177,6 +1177,13 @@ fn process_software_update_check_response(bytes: Bytes) -> ResultType<()> {
+ // Because the url is always `https://api.rustdesk.com/version/latest`.
+ #[tokio::main(flavor = "current_thread")]
+ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
++    // NEBARO: no request to api.rustdesk.com. This covers the update hint, the Windows updater
++    // and the silent macOS update (updater.rs): all of them call this function first and find
++    // no update URL. New versions come from the NEBARO build only.
++    if crate::nebaro::NO_UPDATE_CHECK {
++        clear_software_update_url();
++        return Ok(());
++    }
+     let (request, url) =
+         hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
+     let proxy_conf = Config::get_socks();
+@@ -2507,6 +2514,14 @@ pub fn rustdesk_interval(i: Interval) -> ThrottledInterval {
+ }
+ 
+ pub fn load_custom_client() {
++    // NEBARO: the configuration is built in (src/nebaro.rs). A custom.txt next to the program,
++    // signed or not, is never read, so nothing on the customer's PC can change server, key or
++    // permissions.
++    crate::nebaro::apply();
++}
++
++#[allow(dead_code)]
++fn load_custom_client_upstream() {
+     #[cfg(debug_assertions)]
+     if let Ok(data) = std::fs::read_to_string("./custom.txt") {
+         read_custom_client(data.trim());
+diff --git a/src/flutter_ffi.rs b/src/flutter_ffi.rs
+index 0d6ca0a..1db1337 100644
+--- a/src/flutter_ffi.rs
++++ b/src/flutter_ffi.rs
+@@ -48,11 +48,9 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
+         *config::APP_DIR.write().unwrap() = app_dir.to_owned();
+     }
+     // core_main's load_custom_client does not work for flutter since it is only applied to its load_library in main.c
+-    if custom_client_config.is_empty() {
+-        crate::load_custom_client();
+-    } else {
+-        crate::read_custom_client(custom_client_config);
+-    }
++    // NEBARO: only the built-in configuration counts, also when the Flutter side hands one over.
++    let _ = custom_client_config;
++    crate::load_custom_client();
+     #[cfg(target_os = "android")]
+     {
+         // flexi_logger can't work when android_logger initialized.
+diff --git a/src/lib.rs b/src/lib.rs
+index f6e48a1..3a010a1 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -49,6 +49,8 @@ mod clipboard;
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ pub mod core_main;
+ mod custom_server;
++// NEBARO: built-in configuration of the NEBARO Fernwartung client (src/nebaro.rs).
++mod nebaro;
+ mod lang;
+ #[cfg(not(any(target_os = "android", target_os = "ios")))]
+ mod port_forward;
+diff --git a/src/nebaro.rs b/src/nebaro.rs
+new file mode 100644
+index 0000000..84731db
+--- /dev/null
++++ b/src/nebaro.rs
+@@ -0,0 +1,155 @@
++//! NEBARO Fernwartung: the configuration built into this client.
++//!
++//! Added by the NEBARO patch (AGPL-3.0, like RustDesk).
++//! It replaces the signed `custom.txt` of RustDesk's custom-client mechanism: the same maps
++//! (OVERWRITE_*, BUILTIN_SETTINGS, HARD_SETTINGS) are filled, but from this file at start, so
++//! nobody can change them on the customer's PC and no configuration file next to the program,
++//! no file name and no deep link is read.
++//!
++//! Server and key are not in this file: the build sets `NEBARO_RENDEZVOUS_SERVER` and
++//! `NEBARO_RS_PUB_KEY`, and the patched `hbb_common::config::RENDEZVOUS_SERVERS` / `RS_PUB_KEY`
++//! read them with `env!` (no build without them).
++
++use base::config::keys;
++use hbb_common::config::{self, RENDEZVOUS_SERVERS, RS_PUB_KEY};
++
++/// Name in window title, config folder and IPC path.
++pub const APP_NAME: &str = "NEBARO Fernwartung";
++
++/// `do_check_software_update` returns before any request to rustdesk.com: new versions come
++/// only from the NEBARO build.
++pub const NO_UPDATE_CHECK: bool = true;
++
++/// `platform::windows::get_license_from_exe_name` returns an error: server and key never come
++/// from the file name of the program.
++pub const NO_EXE_NAME_CONFIG: bool = true;
++
++/// Never fall back to an unencrypted session. RustDesk continues in plain text when the peer's
++/// key is not signed by the server key it knows (client: `Client::secure_connection`, server:
++/// `server::identity_handshake`). With this switch both sides break off instead
++/// (client: `Client::secure_connection`, `io_loop`; server: `server::create_tcp_connection`).
++pub const REFUSE_INSECURE: bool = true;
++
++/// Shown in the window when a session is refused because it would not be encrypted.
++pub const INSECURE_REFUSED: &str = "Connection refused: encryption could not be verified, the \
++peer's key is not confirmed by the NEBARO server. Please contact NEBARO support.";
++
++/// Server side of a session: what the technician may do on this PC.
++const OVERRIDE_SETTINGS: &[(&str, &str)] = &[
++    // Own server and key (set in apply()), the user cannot change them.
++    (keys::OPTION_API_SERVER, ""),
++    // "custom": every permission below counts; "full" would switch all of them on.
++    (keys::OPTION_ACCESS_MODE, "custom"),
++    // Screen, mouse and keyboard: that is the support session.
++    (keys::OPTION_ENABLE_KEYBOARD, "Y"),
++    // Clipboard stays on. Files over the clipboard need file transfer
++    // (Connection::can_sub_file_clipboard_service, Cliprdr handling), so only text and images go.
++    (keys::OPTION_ENABLE_CLIPBOARD, "Y"),
++    // No file transfer.
++    (keys::OPTION_ENABLE_FILE_TRANSFER, "N"),
++    // Everything else a support session does not need.
++    (keys::OPTION_ENABLE_CAMERA, "N"),
++    (keys::OPTION_ENABLE_TERMINAL, "N"),
++    (keys::OPTION_ENABLE_REMOTE_PRINTER, "N"),
++    (keys::OPTION_ENABLE_AUDIO, "N"),
++    (keys::OPTION_ENABLE_TUNNEL, "N"),
++    (keys::OPTION_ENABLE_REMOTE_RESTART, "N"),
++    (keys::OPTION_ENABLE_RECORD_SESSION, "N"),
++    (keys::OPTION_ENABLE_BLOCK_INPUT, "N"),
++    (keys::OPTION_ENABLE_PRIVACY_MODE, "N"),
++    (keys::OPTION_ALLOW_REMOTE_CONFIG_MODIFICATION, "N"),
++    (keys::OPTION_ALLOW_AUTO_RECORD_INCOMING, "N"),
++    (keys::OPTION_ENABLE_TRUSTED_DEVICES, "N"),
++    // Only through the NEBARO server: no direct port, no LAN discovery, no WebSocket.
++    (keys::OPTION_DIRECT_SERVER, "N"),
++    (keys::OPTION_ENABLE_LAN_DISCOVERY, "N"),
++    (keys::OPTION_ALLOW_WEBSOCKET, "N"),
++    // Only while the window is open: nothing accepts sessions after closing.
++    (keys::OPTION_ALLOW_ONLY_CONN_WINDOW_OPEN, "Y"),
++    // Acceptance: never a fixed password. Without a password the user clicks "Accept" on the
++    // device; alternatively the one-time password shown in the window is accepted.
++    // "password-click" = both, the same value RustDesk uses for its custom clients.
++    (keys::OPTION_APPROVE_MODE, "password-click"),
++    (keys::OPTION_VERIFICATION_METHOD, "use-temporary-password"),
++    (keys::OPTION_TEMPORARY_PASSWORD_LENGTH, "8"),
++    (keys::OPTION_ALLOW_NUMERNIC_ONE_TIME_PASSWORD, "N"),
++    // No update from rustdesk.com (see NO_UPDATE_CHECK).
++    (keys::OPTION_ALLOW_AUTO_UPDATE, "N"),
++];
++
++/// Local (controlling side and UI) settings.
++const OVERRIDE_LOCAL_SETTINGS: &[(&str, &str)] = &[
++    (keys::OPTION_ENABLE_CHECK_UPDATE, "N"),
++    (keys::OPTION_ENABLE_UDP_PUNCH, "N"),
++    (keys::OPTION_ENABLE_IPV6_PUNCH, "N"),
++    (keys::OPTION_ENABLE_TCP_PUNCH, "N"),
++    (keys::OPTION_ENABLE_WEBRTC, "N"),
++    (keys::OPTION_PRE_ELEVATE_SERVICE, "N"),
++    (keys::OPTION_ALLOW_REMOTE_CM_MODIFICATION, "N"),
++];
++
++/// Built-in options (RustDesk reads them from BUILTIN_SETTINGS).
++const BUILTIN_SETTINGS: &[(&str, &str)] = &[
++    // No heartbeat to an API server (Config::no_register_device): the free server has none.
++    (keys::OPTION_REGISTER_DEVICE, "N"),
++    (keys::OPTION_DISABLE_CHANGE_PERMANENT_PASSWORD, "Y"),
++    (keys::OPTION_DISABLE_CHANGE_ID, "Y"),
++    (keys::OPTION_ALLOW_LOGON_SCREEN_PASSWORD, "N"),
++    (keys::OPTION_ALLOW_DEEP_LINK_PASSWORD, "N"),
++    (keys::OPTION_ALLOW_DEEP_LINK_SERVER_SETTINGS, "N"),
++    (keys::OPTION_ALLOW_HOSTNAME_AS_ID, "N"),
++    (keys::OPTION_ENABLE_PERM_CHANGE_IN_ACCEPT_WINDOW, "N"),
++    (keys::OPTION_HIDE_SERVER_SETTINGS, "Y"),
++    (keys::OPTION_HIDE_PROXY_SETTINGS, "Y"),
++    (keys::OPTION_HIDE_SECURITY_SETTINGS, "Y"),
++    (keys::OPTION_HIDE_NETWORK_SETTINGS, "Y"),
++    (keys::OPTION_HIDE_WEBSOCKET_SETTINGS, "Y"),
++    (keys::OPTION_HIDE_REMOTE_PRINTER_SETTINGS, "Y"),
++    (keys::OPTION_HIDE_STOP_SERVICE, "Y"),
++];
++
++/// Hard options (config::is_disable_* / is_incoming_only).
++const HARD_SETTINGS: &[(&str, &str)] = &[
++    // Only receive a session, never control another PC.
++    ("conn-type", "incoming"),
++    // No installation, no service, no autostart.
++    ("disable-installation", "Y"),
++    ("disable-settings", "Y"),
++    ("disable-ab", "Y"),
++    ("disable-account", "Y"),
++    // No listening port on the PC: only the NEBARO server.
++    ("disable-tcp-listen", "Y"),
++];
++
++/// Fills the configuration maps. Called by `common::load_custom_client` instead of reading
++/// `custom.txt`, in every process of the client (GUI, --server, --cm).
++pub fn apply() {
++    let host = RENDEZVOUS_SERVERS[0];
++    *config::APP_NAME.write().unwrap() = APP_NAME.to_owned();
++    #[cfg(target_os = "macos")]
++    {
++        *config::ORG.write().unwrap() = "at.nebaro".to_owned();
++    }
++    {
++        let mut m = config::OVERWRITE_SETTINGS.write().unwrap();
++        m.insert(keys::OPTION_CUSTOM_RENDEZVOUS_SERVER.to_owned(), host.to_owned());
++        m.insert(keys::OPTION_RELAY_SERVER.to_owned(), host.to_owned());
++        m.insert(keys::OPTION_KEY.to_owned(), RS_PUB_KEY.to_owned());
++        for (k, v) in OVERRIDE_SETTINGS {
++            m.insert((*k).to_owned(), (*v).to_owned());
++        }
++    }
++    fill(&config::OVERWRITE_LOCAL_SETTINGS, OVERRIDE_LOCAL_SETTINGS);
++    fill(&config::BUILTIN_SETTINGS, BUILTIN_SETTINGS);
++    fill(&config::HARD_SETTINGS, HARD_SETTINGS);
++}
++
++fn fill(
++    map: &std::sync::RwLock<std::collections::HashMap<String, String>>,
++    entries: &[(&str, &str)],
++) {
++    let mut m = map.write().unwrap();
++    for (k, v) in entries {
++        m.insert((*k).to_owned(), (*v).to_owned());
++    }
++}
+diff --git a/src/platform/windows.rs b/src/platform/windows.rs
+index a09783d..a737c5f 100644
+--- a/src/platform/windows.rs
++++ b/src/platform/windows.rs
+@@ -2172,6 +2172,11 @@ pub fn prepare_custom_client_update() -> ResultType<bool> {
+ }
+ 
+ pub fn get_license_from_exe_name() -> ResultType<CustomServer> {
++    // NEBARO: server and key never come from the file name ("host=...,key=....exe"). The name
++    // would otherwise win over the built-in server (EXE_RENDEZVOUS_SERVER, get_key, api server).
++    if crate::nebaro::NO_EXE_NAME_CONFIG {
++        hbb_common::bail!("configuration from the file name is disabled");
++    }
+     let mut exe = std::env::current_exe()?.to_str().unwrap_or("").to_owned();
+     // if defined portable appname entry, replace original executable name with it.
+     if let Ok(portable_exe) = std::env::var(PORTABLE_APPNAME_RUNTIME_ENV_KEY) {
+diff --git a/src/server.rs b/src/server.rs
+index a88e33a..6159ad0 100644
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -234,6 +234,21 @@ pub async fn create_tcp_connection(
+             bail!("evicted to make room for a newer unauthenticated connection");
+         }
+     }
++    // NEBARO: identity_handshake leaves the stream unencrypted when the rendezvous did not ask
++    // for a secure session, when the controller answers with an empty key (it could not verify
++    // our key against the server signature) or with an unexpected message. RustDesk then goes on
++    // in plain text. Refuse instead, and tell the controller why: its window shows the close
++    // reason ("Connection Error"). The only message that can still reach it is unencrypted, and
++    // it carries nothing but this text.
++    if crate::nebaro::REFUSE_INSECURE && !stream.is_secured() {
++        log::error!("NEBARO: refusing unencrypted connection from {}", addr);
++        let mut misc = Misc::new();
++        misc.set_close_reason(crate::nebaro::INSECURE_REFUSED.to_owned());
++        let mut msg_out = Message::new();
++        msg_out.set_misc(misc);
++        allow_err!(stream.send(&msg_out).await);
++        bail!("refused unencrypted connection (NEBARO)");
++    }
+ 
+     #[cfg(target_os = "macos")]
+     {
+diff --git a/src/ui_interface.rs b/src/ui_interface.rs
+index 995d6d0..2078e4b 100644
+--- a/src/ui_interface.rs
++++ b/src/ui_interface.rs
+@@ -745,6 +745,12 @@ pub fn is_can_screen_recording(_prompt: bool) -> bool {
+ 
+ #[inline]
+ pub fn is_installed_daemon(_prompt: bool) -> bool {
++    // NEBARO: with installation disabled the macOS client never offers or installs its
++    // LaunchDaemon/LaunchAgent (no autostart); the "install daemon" card stays hidden.
++    #[cfg(target_os = "macos")]
++    if config::is_disable_installation() {
++        return true;
++    }
+     #[cfg(target_os = "macos")]
+     return crate::platform::macos::is_installed_daemon(_prompt);
+     #[cfg(not(target_os = "macos"))]

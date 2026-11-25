@@ -1,0 +1,18 @@
+diff --git a/src/config.rs b/src/config.rs
+index 9ee5cac..3bd9867 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -113,8 +113,11 @@ const CHARS: &[char] = &[
+     'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+ ];
+ 
+-pub const RENDEZVOUS_SERVERS: &[&str] = &["rs-ny.rustdesk.com"];
+-pub const RS_PUB_KEY: &str = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=";
++// NEBARO: no fallback to the public RustDesk servers. Host and public key of the NEBARO server
++// are set at build time (NEBARO_RENDEZVOUS_SERVER, NEBARO_RS_PUB_KEY); without them the client
++// does not compile.
++pub const RENDEZVOUS_SERVERS: &[&str] = &[env!("NEBARO_RENDEZVOUS_SERVER")];
++pub const RS_PUB_KEY: &str = env!("NEBARO_RS_PUB_KEY");
+ 
+ pub const RENDEZVOUS_PORT: i32 = 21116;
+ pub const RELAY_PORT: i32 = 21117;
